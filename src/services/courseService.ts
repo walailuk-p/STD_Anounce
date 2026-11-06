@@ -47,15 +47,107 @@ export async function saveCourse(course: Course): Promise<void> {
 }
 
 /**
- * Delete a course
+ * Delete a course and all its cascaded sections and student scores
+ */
+export async function deleteCourseWithData(courseId: string): Promise<{ deletedScoresCount: number; deletedSectionsCount: number }> {
+  let deletedScoresCount = 0;
+  let deletedSectionsCount = 0;
+
+  try {
+    // 1. Fetch and delete all scores for this course in batches of 450
+    const scoresQuery = query(collection(db, SCORES_COL), where('courseId', '==', courseId));
+    const scoresSnap = await getDocs(scoresQuery);
+    const scoreDocs = scoresSnap.docs;
+
+    const CHUNK_SIZE = 450;
+    for (let i = 0; i < scoreDocs.length; i += CHUNK_SIZE) {
+      const chunk = scoreDocs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+      deletedScoresCount += chunk.length;
+    }
+
+    // 2. Fetch and delete all sections for this course
+    const sectionsQuery = query(collection(db, SECTIONS_COL), where('courseId', '==', courseId));
+    const sectionsSnap = await getDocs(sectionsQuery);
+    const sectionDocs = sectionsSnap.docs;
+
+    for (let i = 0; i < sectionDocs.length; i += CHUNK_SIZE) {
+      const chunk = sectionDocs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+      deletedSectionsCount += chunk.length;
+    }
+
+    // 3. Delete the course document itself
+    const courseRef = doc(db, COURSES_COL, courseId);
+    await deleteDoc(courseRef);
+
+    return { deletedScoresCount, deletedSectionsCount };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `${COURSES_COL}/${courseId}`);
+  }
+}
+
+/**
+ * Delete specific section and all its student scores
+ */
+export async function deleteSectionWithScores(courseId: string, sec: string): Promise<{ deletedScoresCount: number }> {
+  let deletedScoresCount = 0;
+
+  try {
+    // 1. Fetch and delete all scores for this course & section
+    const scoresQuery = query(
+      collection(db, SCORES_COL),
+      where('courseId', '==', courseId),
+      where('sec', '==', sec)
+    );
+    const scoresSnap = await getDocs(scoresQuery);
+    const scoreDocs = scoresSnap.docs;
+
+    const CHUNK_SIZE = 450;
+    for (let i = 0; i < scoreDocs.length; i += CHUNK_SIZE) {
+      const chunk = scoreDocs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+      deletedScoresCount += chunk.length;
+    }
+
+    // 2. Delete the section document
+    const secDocId = `${courseId}_sec_${sec}`;
+    try {
+      await deleteDoc(doc(db, SECTIONS_COL, secDocId));
+    } catch {
+      // ignore if specific ID doesn't exist
+    }
+
+    // Also query and delete any section docs matching this section
+    const secQuery = query(
+      collection(db, SECTIONS_COL),
+      where('courseId', '==', courseId),
+      where('sec', '==', sec)
+    );
+    const secSnap = await getDocs(secQuery);
+    if (!secSnap.empty) {
+      const secBatch = writeBatch(db);
+      secSnap.docs.forEach(d => secBatch.delete(d.ref));
+      await secBatch.commit();
+    }
+
+    return { deletedScoresCount };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `${SECTIONS_COL}/${courseId}_sec_${sec}`);
+  }
+}
+
+/**
+ * Legacy delete course alias
  */
 export async function deleteCourse(courseId: string): Promise<void> {
-  const path = `${COURSES_COL}/${courseId}`;
-  try {
-    await deleteDoc(doc(db, COURSES_COL, courseId));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
-  }
+  await deleteCourseWithData(courseId);
 }
 
 /**
@@ -87,6 +179,25 @@ export async function getStudentScore(courseId: string, studentId: string): Prom
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, path);
   }
+}
+
+/**
+ * Direct lookup of student score across available courses without requiring user to pick course
+ */
+export async function findStudentScoreAcrossCourses(courses: Course[], studentId: string): Promise<StudentScore | null> {
+  const cleanId = studentId.trim();
+  for (const course of courses) {
+    const docId = `${course.id}_${cleanId}`;
+    try {
+      const snap = await getDoc(doc(db, SCORES_COL, docId));
+      if (snap.exists()) {
+        return snap.data() as StudentScore;
+      }
+    } catch {
+      // If document not found or access denied for this particular course doc, check next
+    }
+  }
+  return null;
 }
 
 /**

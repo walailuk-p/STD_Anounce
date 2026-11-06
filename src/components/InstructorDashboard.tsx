@@ -9,6 +9,7 @@ import {
   Edit2,
   Check,
   AlertCircle,
+  AlertTriangle,
   Eye,
   EyeOff,
   RefreshCw,
@@ -35,6 +36,8 @@ import {
   getCourses,
   saveCourse,
   deleteCourse,
+  deleteCourseWithData,
+  deleteSectionWithScores,
   getSections,
   getTeacherScores,
   saveSingleScore,
@@ -74,6 +77,17 @@ export const InstructorDashboard: React.FC = () => {
 
   const [editingScore, setEditingScore] = useState<StudentScore | null>(null);
   const [importNotice, setImportNotice] = useState<string | null>(null);
+
+  // Deletion Modals state
+  const [courseToDelete, setCourseToDelete] = useState<Course | null>(null);
+  const [isDeletingCourse, setIsDeletingCourse] = useState<boolean>(false);
+
+  const [sectionToDelete, setSectionToDelete] = useState<{ courseId: string; sec: string; studentCount: number } | null>(null);
+  const [isDeletingSection, setIsDeletingSection] = useState<boolean>(false);
+
+  // Reset PIN Modal state
+  const [studentToResetPin, setStudentToResetPin] = useState<StudentScore | null>(null);
+  const [isResettingPin, setIsResettingPin] = useState<boolean>(false);
 
   // CSV file input ref
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -201,17 +215,42 @@ export const InstructorDashboard: React.FC = () => {
     }
   };
 
-  // Delete Course
-  const handleDeleteCourse = async (courseId: string) => {
-    if (!window.confirm('คุณแน่ใจหรือไม่ว่าต้องการลบรายวิชานี้? (ข้อมูลคะแนนทั้งหมดในวิชานี้จะถูกลบ)')) return;
+  // Confirm Delete Entire Course
+  const handleConfirmDeleteCourse = async () => {
+    if (!courseToDelete) return;
+    setIsDeletingCourse(true);
     try {
-      await deleteCourse(courseId);
-      const updated = courses.filter(c => c.id !== courseId);
+      const res = await deleteCourseWithData(courseToDelete.id);
+      const updated = courses.filter(c => c.id !== courseToDelete.id);
       setCourses(updated);
       setActiveCourseId(updated.length > 0 ? updated[0].id : '');
+      setCourseToDelete(null);
+      setImportNotice(`ลบรายวิชา ${courseToDelete.code} และข้อมูลคะแนนทั้งหมด ${res?.deletedScoresCount || 0} รายการเรียบร้อยแล้ว`);
+      setTimeout(() => setImportNotice(null), 5000);
     } catch (err) {
       console.error(err);
-      alert('ไม่สามารถลบรายวิชาได้');
+      alert('เกิดข้อผิดพลาดในการลบรายวิชา กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsDeletingCourse(false);
+    }
+  };
+
+  // Confirm Delete Specific Section
+  const handleConfirmDeleteSection = async () => {
+    if (!sectionToDelete || !activeCourse) return;
+    setIsDeletingSection(true);
+    try {
+      const res = await deleteSectionWithScores(sectionToDelete.courseId, sectionToDelete.sec);
+      setSectionToDelete(null);
+      setImportNotice(`ลบกลุ่มเรียน Sec ${sectionToDelete.sec} และคะแนนนักศึกษา ${res?.deletedScoresCount || 0} รายการเรียบร้อยแล้ว`);
+      setTimeout(() => setImportNotice(null), 5000);
+      // Reload current course details
+      await loadCourseDetails(activeCourse.id);
+    } catch (err) {
+      console.error(err);
+      alert('เกิดข้อผิดพลาดในการลบกลุ่มเรียน กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsDeletingSection(false);
     }
   };
 
@@ -338,16 +377,28 @@ export const InstructorDashboard: React.FC = () => {
     }
   };
 
-  // Reset Student PIN
-  const handleResetPin = async (scoreId: string, studentName: string) => {
-    if (!window.confirm(`ต้องการรีเซ็ตรหัสผ่าน 6 หลักของ "${studentName}" หรือไม่?\n(นักศึกษาจะสามารถตั้งรหัสผ่านใหม่ได้ทันที)`)) return;
+  // Reset Student PIN with Modal Confirmation
+  const handleConfirmResetPin = async () => {
+    if (!studentToResetPin) return;
+    setIsResettingPin(true);
     try {
-      await resetStudentPinByTeacher(scoreId);
-      setScores(prev => prev.map(s => s.id === scoreId ? { ...s, pinHash: null, pinSalt: null, pinAttempts: 0, lockedUntil: null } : s));
-      alert(`รีเซ็ตรหัสผ่านของ ${studentName} เรียบร้อยแล้ว`);
+      await resetStudentPinByTeacher(studentToResetPin.id);
+      // Immediately update local state in real-time
+      setScores(prev => prev.map(s => s.id === studentToResetPin.id ? {
+        ...s,
+        pinHash: null,
+        pinSalt: null,
+        pinAttempts: 0,
+        lockedUntil: null
+      } : s));
+      setImportNotice(`รีเซ็ตรหัสผ่าน 6 หลักของ ${studentToResetPin.name} (รหัส ${studentToResetPin.studentId}) สำเร็จแล้ว สถานะเปลี่ยนเป็น 'ยังไม่ตั้ง' ให้นักศึกษาลงทะเบียนรหัสผ่านใหม่ได้ทันที`);
+      setTimeout(() => setImportNotice(null), 6000);
+      setStudentToResetPin(null);
     } catch (err) {
       console.error(err);
-      alert('ไม่สามารถรีเซ็ตรหัสผ่านได้');
+      alert('เกิดข้อผิดพลาดในการรีเซ็ตรหัสผ่าน กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsResettingPin(false);
     }
   };
 
@@ -503,9 +554,9 @@ export const InstructorDashboard: React.FC = () => {
 
                 {activeCourse && (
                   <button
-                    onClick={() => handleDeleteCourse(activeCourse.id)}
+                    onClick={() => setCourseToDelete(activeCourse)}
                     className="p-1.5 text-xs rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                    title="ลบรายวิชานี้"
+                    title="ลบรายวิชานี้พร้อมข้อมูลทั้งหมด"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -591,7 +642,7 @@ export const InstructorDashboard: React.FC = () => {
                     return (
                       <div
                         key={secName}
-                        className={`inline-flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-xs border transition-all ${
+                        className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs border transition-all ${
                           isPub
                             ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
                             : 'bg-slate-50 border-slate-200 text-slate-700'
@@ -610,6 +661,13 @@ export const InstructorDashboard: React.FC = () => {
                           }`}
                         >
                           {isPub ? '🟢 เปิดประกาศอยู่ (คลิกเพื่อปิด)' : '🔴 ปิดประกาศ (คลิกเพื่อเปิด)'}
+                        </button>
+                        <button
+                          onClick={() => setSectionToDelete({ courseId: activeCourseId, sec: secName, studentCount: count })}
+                          className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-100/70 transition-colors cursor-pointer"
+                          title={`ลบกลุ่มเรียน Sec ${secName} (ลบคะแนนเฉพาะกลุ่มนี้)`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     );
@@ -751,9 +809,9 @@ export const InstructorDashboard: React.FC = () => {
                               {/* Reset PIN */}
                               {score.pinHash && (
                                 <button
-                                  onClick={() => handleResetPin(score.id, score.name)}
-                                  className="p-1 rounded-md text-amber-600 hover:text-amber-800 hover:bg-amber-50 transition-colors cursor-pointer"
-                                  title="รีเซ็ตรหัสผ่าน 6 หลักให้นักศึกษา (กรณีลืมรหัส)"
+                                  onClick={() => setStudentToResetPin(score)}
+                                  className="p-1 rounded-md text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors cursor-pointer"
+                                  title="รีเซ็ตรหัสผ่าน 6 หลัก (Reset PIN)"
                                 >
                                   <KeyRound className="w-3.5 h-3.5" />
                                 </button>
@@ -989,6 +1047,204 @@ export const InstructorDashboard: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Delete Entire Course Confirmation */}
+      {courseToDelete && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 max-w-md w-full animate-fadeIn">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">ยืนยันการลบทั้งรายวิชา?</h3>
+                <p className="text-xs text-slate-500">
+                  {courseToDelete.code} : {courseToDelete.title} ({courseToDelete.term})
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-6 text-xs text-slate-600 bg-rose-50 border border-rose-200 rounded-xl p-4">
+              <div className="font-semibold text-rose-900 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                คำเตือน: การลบนี้ไม่สามารถย้อนกลับได้
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-rose-800">
+                <li>ข้อมูลตัวรายวิชา <strong>{courseToDelete.code}</strong> จะถูกลบถาวร</li>
+                <li>ข้อมูลทุกกลุ่มเรียน (Sections) ของวิชานี้จะถูกลบทั้งหมด</li>
+                <li>ข้อมูลคะแนนของนักศึกษาทุกคนในวิชานี้ (รวม <strong>{scores.length}</strong> คน) จะถูกลบถาวร</li>
+              </ul>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isDeletingCourse}
+                onClick={() => setCourseToDelete(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingCourse}
+                onClick={handleConfirmDeleteCourse}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingCourse ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    กำลังลบข้อมูล...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    ยืนยันลบทั้งรายวิชา
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Delete Specific Section Confirmation */}
+      {sectionToDelete && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 max-w-md w-full animate-fadeIn">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">ยืนยันการลบกลุ่มเรียน Sec {sectionToDelete.sec}?</h3>
+                <p className="text-xs text-slate-500">
+                  {activeCourse?.code} - {activeCourse?.title}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-6 text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <div className="font-semibold text-amber-950 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                ผลกระทบของการลบกลุ่มเรียน
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-amber-900">
+                <li>ข้อมูลกลุ่มเรียน <strong>Sec {sectionToDelete.sec}</strong> จะถูกลบออก</li>
+                <li>คะแนนนักศึกษาใน Sec {sectionToDelete.sec} จำนวน <strong>{sectionToDelete.studentCount}</strong> คน จะถูกลบถาวร</li>
+                <li><strong>กลุ่มเรียนอื่นและตัวรายวิชายังคงอยู่ตามปกติ</strong> ไม่ได้รับผลกระทบ</li>
+              </ul>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isDeletingSection}
+                onClick={() => setSectionToDelete(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingSection}
+                onClick={handleConfirmDeleteSection}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingSection ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    กำลังลบกลุ่มเรียน...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    ยืนยันลบ Sec {sectionToDelete.sec}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Reset Student PIN Confirmation */}
+      {studentToResetPin && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 max-w-md w-full animate-fadeIn">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <KeyRound className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">รีเซ็ตรหัสผ่าน PIN 6 หลัก</h3>
+                <p className="text-xs text-slate-500">
+                  สำหรับกรณีนักศึกษาลืมรหัสผ่าน
+                </p>
+              </div>
+            </div>
+
+            {/* Student Info Card */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 text-xs space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">ชื่อ-นามสกุล:</span>
+                <span className="font-bold text-slate-900 text-sm">{studentToResetPin.name}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">รหัสนักศึกษา:</span>
+                <span className="font-mono font-bold text-slate-800">{studentToResetPin.studentId}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">กลุ่มเรียน (Sec):</span>
+                <span className="font-semibold text-slate-800">Sec {studentToResetPin.sec}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">ลำดับที่ (เลขที่):</span>
+                <span className="text-slate-700">{studentToResetPin.no || '-'}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2 mb-6 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-xl p-3.5">
+              <div className="font-semibold flex items-center gap-1.5 text-amber-950">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                คำชี้แจงการรีเซ็ตรหัสผ่าน
+              </div>
+              <p className="leading-relaxed">
+                เมื่อทำการรีเซ็ตแล้ว รหัสผ่าน PIN 6 หลักเดิมของนักศึกษาจะถูกลบออก และสถานะจะเปลี่ยนเป็น <strong>"ยังไม่ตั้ง"</strong> เพื่อให้นักศึกษาสามารถเข้าลงทะเบียนรหัสผ่าน 6 หลักใหม่ได้ด้วยตนเองทันที
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isResettingPin}
+                onClick={() => setStudentToResetPin(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={isResettingPin}
+                onClick={handleConfirmResetPin}
+                className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                {isResettingPin ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    กำลังรีเซ็ต...
+                  </>
+                ) : (
+                  <>
+                    <KeyRound className="w-4 h-4" />
+                    ยืนยันการรีเซ็ต PIN
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -18,7 +18,14 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Course, StudentScore } from '../types';
-import { getCourses, getStudentScore, setupStudentPin, recordFailedAttempt, resetFailedAttempts } from '../services/courseService';
+import {
+  getCourses,
+  getStudentScore,
+  findStudentScoreAcrossCourses,
+  setupStudentPin,
+  recordFailedAttempt,
+  resetFailedAttempts
+} from '../services/courseService';
 import { verifyPin } from '../utils/crypto';
 
 interface StudentScoreViewProps {
@@ -27,7 +34,6 @@ interface StudentScoreViewProps {
 
 export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstructor }) => {
   const [courses, setCourses] = useState<Course[]>([]);
-  const [selectedCourseId, setSelectedCourseId] = useState<string>('');
   const [studentIdInput, setStudentIdInput] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [initialLoading, setInitialLoading] = useState<boolean>(true);
@@ -53,9 +59,6 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
       try {
         const list = await getCourses();
         setCourses(list);
-        if (list.length > 0) {
-          setSelectedCourseId(list[0].id);
-        }
       } catch (err) {
         console.error('Failed to load courses', err);
       } finally {
@@ -92,18 +95,24 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
       setErrorMessage('กรุณากรอกรหัสนักศึกษา');
       return;
     }
-    if (!selectedCourseId) {
-      setErrorMessage('กรุณาเลือกรายวิชาที่ต้องการตรวจสอบ');
+    if (cleanId.length < 10) {
+      setErrorMessage('กรุณากรอกรหัสนักศึกษา 10 หลักให้ครบถ้วน');
       return;
     }
-
     setLoading(true);
     try {
-      // 1 single Firestore read! Quota optimized for Spark Plan
-      const score = await getStudentScore(selectedCourseId, cleanId);
+      const courseList = courses.length > 0 ? courses : await getCourses();
+      if (courseList.length === 0) {
+        setErrorMessage('ขณะนี้ยังไม่มีรายวิชาที่อาจารย์บันทึกหรือเปิดประกาศในระบบ กรุณารออาจารย์ผู้สอนเปิดระบบ');
+        setLoading(false);
+        return;
+      }
+
+      // Direct lookup of student score across courses (Single Document Get per course)
+      const score = await findStudentScoreAcrossCourses(courseList, cleanId);
 
       if (!score) {
-        setErrorMessage('ไม่พบข้อมูลผลคะแนนของรหัสนักศึกษานี้ กรุณาตรวจสอบรหัสนักศึกษาและรายวิชาอีกครั้ง หรือติดต่ออาจารย์ผู้สอน');
+        setErrorMessage('ไม่พบข้อมูลผลคะแนนของรหัสนักศึกษานี้ในระบบ กรุณาตรวจสอบรหัสนักศึกษาอีกครั้ง หรือติดต่ออาจารย์ผู้สอน');
         setLoading(false);
         return;
       }
@@ -131,13 +140,45 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
 
       // Check if student has set PIN before
       if (!score.pinHash) {
-        // First-time visitor
+        // First-time visitor: redirect to set up their 6-digit PIN
         setStep('first_time_setup');
       } else {
         // Returning visitor with PIN
         const failed = score.pinAttempts || 0;
-        setPinAttemptsLeft(Math.max(0, 5 - failed));
-        setStep('enter_pin');
+        const left = Math.max(0, 5 - failed);
+        setPinAttemptsLeft(left);
+
+        if (!pinInput || pinInput.length !== 6) {
+          setErrorMessage('กรุณากรอกรหัสผ่านตัวเลข 6 หลักของคุณเพื่อตรวจสอบคะแนน');
+          setLoading(false);
+          return;
+        }
+
+        // Verify PIN right away
+        const isValid = await verifyPin(pinInput, score.pinSalt || '', score.pinHash);
+
+        if (isValid) {
+          await resetFailedAttempts(score.courseId, score.studentId);
+          setStep('view_score');
+          triggerConfetti();
+        } else {
+          const result = await recordFailedAttempt(
+            score.courseId,
+            score.studentId,
+            score.pinAttempts || 0
+          );
+
+          if (result?.locked) {
+            setIsLocked(true);
+            setLockRemainingSeconds(15 * 60);
+            setErrorMessage('คุณกรอกรหัสผ่านผิดเกิน 5 ครั้ง ระบบถูกระงับชั่วคราว 15 นาที');
+          } else {
+            const attemptsNow = (score.pinAttempts || 0) + 1;
+            const remaining = Math.max(0, 5 - attemptsNow);
+            setPinAttemptsLeft(remaining);
+            setErrorMessage(`รหัสผ่านไม่ถูกต้อง (สามารถลองได้อีก ${remaining} ครั้ง) หากลืมรหัสผ่านกรุณาติดต่ออาจารย์ผู้สอน`);
+          }
+        }
       }
     } catch (err) {
       console.error(err);
@@ -294,30 +335,6 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
       {step === 'search' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8">
           <form onSubmit={handleSearchStudent} className="space-y-5">
-            {/* Course Selector */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                เลือกรายวิชา
-              </label>
-              {courses.length === 0 ? (
-                <div className="p-3.5 bg-amber-50 text-amber-800 text-xs rounded-xl border border-amber-200">
-                  ขณะนี้ยังไม่มีรายวิชาที่อาจารย์บันทึกในระบบ หากคุณเป็นอาจารย์ผู้สอน กรุณาเข้าสู่ระบบอาจารย์เพื่อสร้างรายวิชาและนำเข้าคะแนน
-                </div>
-              ) : (
-                <select
-                  value={selectedCourseId}
-                  onChange={(e) => setSelectedCourseId(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-300 bg-slate-50 text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm font-medium transition-all"
-                >
-                  {courses.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.code} - {c.title} ({c.term})
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
             {/* Student ID Input */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -331,18 +348,63 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
                   type="text"
                   inputMode="numeric"
                   pattern="[0-9]*"
-                  maxLength={15}
+                  maxLength={10}
                   value={studentIdInput}
-                  onChange={(e) => setStudentIdInput(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '');
+                    setStudentIdInput(val);
+                    if (errorMessage) setErrorMessage(null);
+                  }}
                   placeholder="เช่น 1650701001"
                   disabled={loading || isLocked}
                   className="w-full pl-11 pr-4 py-3.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 font-mono text-lg font-bold tracking-wider focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:bg-slate-100 disabled:cursor-not-allowed transition-all"
+                  autoFocus
                 />
               </div>
-              <p className="text-xs text-slate-500 mt-1.5">
-                * ไม่ต้องใช้อีเมลและไม่ใช้ระบบ QR Code รักษาความเป็นส่วนตัว 100%
-              </p>
             </div>
+
+            {/* Dynamic Stage 2: 6-digit PIN Input (Reveals when student ID has 10 digits) */}
+            {studentIdInput.trim().length === 10 && (
+              <div className="space-y-1.5 animate-fadeIn">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                    รหัสผ่าน 6 หลัก (PIN)
+                  </label>
+                  <span className="text-[11px] text-slate-400">
+                    ตัวเลข 6 หลัก
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                    <Lock className="w-5 h-5" />
+                  </div>
+                  <input
+                    type={showPin ? 'text' : 'password'}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={6}
+                    value={pinInput}
+                    onChange={(e) => {
+                      setPinInput(e.target.value.replace(/\D/g, ''));
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                    placeholder="••••••"
+                    disabled={loading || isLocked}
+                    className="w-full pl-11 pr-11 py-3.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 font-mono text-xl font-bold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:bg-slate-100 disabled:cursor-not-allowed transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPin(!showPin)}
+                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                  >
+                    {showPin ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  * หากเข้าใช้งานครั้งแรก สามารถกดปุ่มค้นหาเพื่อตั้งรหัสผ่านใหม่ได้ทันที
+                </p>
+              </div>
+            )}
 
             {/* Error Message */}
             {errorMessage && (
@@ -365,7 +427,7 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading || isLocked || courses.length === 0}
+              disabled={loading || isLocked || studentIdInput.trim().length !== 10}
               className="w-full py-3.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-semibold text-sm shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {loading ? (
@@ -376,7 +438,7 @@ export const StudentScoreView: React.FC<StudentScoreViewProps> = ({ onGoToInstru
               ) : (
                 <>
                   <Search className="w-4 h-4" />
-                  ค้นหาและตรวจสอบคะแนน
+                  {studentIdInput.trim().length !== 10 ? 'กรุณากรอกรหัสนักศึกษา 10 หลัก' : 'ค้นหาและตรวจสอบคะแนน'}
                 </>
               )}
             </button>
