@@ -1,0 +1,6 @@
+{
+  "name": "ScoreAnnounce - ระบบประกาศคะแนนนักศึกษา",
+  "description": "ระบบประกาศและตรวจสอบคะแนนนักศึกษารายบุคคลแบบ Real-time พร้อมระบบจัดการคะแนนสำหรับอาจารย์",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

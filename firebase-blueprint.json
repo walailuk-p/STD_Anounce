@@ -1,0 +1,77 @@
+{
+  "entities": {
+    "Course": {
+      "title": "Course",
+      "description": "Academic course managed by instructors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "code": { "type": "string", "maxLength": 20 },
+        "title": { "type": "string", "maxLength": 100 },
+        "term": { "type": "string", "maxLength": 50 },
+        "instructorUid": { "type": "string", "maxLength": 128 },
+        "instructorEmail": { "type": "string", "maxLength": 150 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "title", "instructorUid"]
+    },
+    "Section": {
+      "title": "Section",
+      "description": "Course section group for publishing controls",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "courseId": { "type": "string", "maxLength": 100 },
+        "sec": { "type": "string", "maxLength": 20 },
+        "isPublished": { "type": "boolean" },
+        "studentCount": { "type": "number" },
+        "instructorUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "courseId", "sec", "isPublished", "instructorUid"]
+    },
+    "Score": {
+      "title": "Score",
+      "description": "Student score record with 6-digit PIN hash for privacy",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 120 },
+        "courseId": { "type": "string", "maxLength": 100 },
+        "courseCode": { "type": "string", "maxLength": 50 },
+        "courseName": { "type": "string", "maxLength": 100 },
+        "studentId": { "type": "string", "maxLength": 20 },
+        "no": { "type": "string", "maxLength": 20 },
+        "name": { "type": "string", "maxLength": 120 },
+        "sec": { "type": "string", "maxLength": 20 },
+        "atten": { "type": "number" },
+        "ca": { "type": "number" },
+        "as": { "type": "number" },
+        "mid": { "type": "number" },
+        "total": { "type": "number" },
+        "isPublished": { "type": "boolean" },
+        "pinHash": { "type": "string", "maxLength": 128 },
+        "pinSalt": { "type": "string", "maxLength": 64 },
+        "pinAttempts": { "type": "number" },
+        "lockedUntil": { "type": "string", "maxLength": 50 },
+        "instructorUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "courseId", "studentId", "name", "sec", "total", "instructorUid"]
+    }
+  },
+  "firestore": {
+    "/courses/{courseId}": {
+      "schema": "Course",
+      "description": "Courses created and managed by instructors"
+    },
+    "/sections/{sectionId}": {
+      "schema": "Section",
+      "description": "Section publish statuses managed by instructors"
+    },
+    "/scores/{scoreId}": {
+      "schema": "Score",
+      "description": "Individual student score documents queried by single document get"
+    }
+  }
+}

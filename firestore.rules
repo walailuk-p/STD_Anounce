@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isTeacher() {
+      return isSignedIn() && request.auth.token.email != null && (
+        request.auth.token.email.matches('.*@[bB][uU]\\.[aA][cC]\\.[tT][hH]$') ||
+        request.auth.token.email.matches('.*@bu\\.ac\\.th$') ||
+        request.auth.token.email == 'w.peanchi@gmail.com'
+      );
+    }
+
+    // Courses collection
+    match /courses/{courseId} {
+      allow read: if true;
+      allow create, update, delete: if isTeacher();
+    }
+
+    // Sections collection
+    match /sections/{sectionId} {
+      allow read: if true;
+      allow create, update, delete: if isTeacher();
+    }
+
+    // Scores collection
+    match /scores/{scoreId} {
+      // 1. Single document read:
+      // - Students can read only if published (1 read per check for privacy & Spark Plan quota)
+      // - Teachers can read any score
+      allow get: if (resource.data.isPublished == true) || isTeacher();
+      
+      // 2. Listing scores:
+      // - Strictly restricted to verified teachers (@bu.ac.th)
+      allow list: if isTeacher();
+
+      // 3. Create by teacher
+      allow create: if isTeacher();
+
+      // 4. Update by teacher OR student setting PIN for the first time / recording attempt
+      allow update: if (
+        isTeacher() ||
+        // Student first-time PIN setting (when pinHash is empty)
+        (resource.data.isPublished == true &&
+         (resource.data.pinHash == null || resource.data.pinHash == '') &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pinHash', 'pinSalt', 'pinAttempts', 'updatedAt']) &&
+         request.resource.data.pinHash is string &&
+         request.resource.data.pinHash.size() == 64 &&
+         request.resource.data.pinSalt is string &&
+         request.resource.data.pinSalt.size() <= 64) ||
+        // Student failed attempt lockout counter
+        (resource.data.isPublished == true &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pinAttempts', 'lockedUntil', 'updatedAt']))
+      );
+
+      // 5. Delete by teacher
+      allow delete: if isTeacher();
+    }
+  }
+}
